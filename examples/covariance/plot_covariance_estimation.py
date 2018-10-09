@@ -83,7 +83,7 @@ loglik_real = -log_likelihood(emp_cov, linalg.inv(real_cov))
 
 # GridSearch for an optimal shrinkage coefficient
 tuned_parameters = [{'shrinkage': shrinkages}]
-cv = GridSearchCV(ShrunkCovariance(), tuned_parameters)
+cv = GridSearchCV(ShrunkCovariance(), tuned_parameters, cv=5)
 cv.fit(X_train)
 
 # Ledoit-Wolf optimal shrinkage coefficient estimate
@@ -98,7 +98,7 @@ loglik_oa = oa.fit(X_train).score(X_test)
 # Plot results
 fig = plt.figure()
 plt.title("Regularized covariance: likelihood and shrinkage coefficient")
-plt.xlabel('Regularizaton parameter: shrinkage coefficient')
+plt.xlabel('Regularization parameter: shrinkage coefficient')
 plt.ylabel('Error: negative log-likelihood on test data')
 # range shrinkage curve
 plt.loglog(shrinkages, negative_logliks, label="Negative log-likelihood")

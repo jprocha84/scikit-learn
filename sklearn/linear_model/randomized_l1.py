@@ -19,7 +19,7 @@ from scipy.interpolate import interp1d
 from .base import _preprocess_data
 from ..base import BaseEstimator
 from ..externals import six
-from ..externals.joblib import Memory, Parallel, delayed
+from ..utils import Memory, Parallel, delayed
 from ..feature_selection.base import SelectorMixin
 from ..utils import (as_float_array, check_random_state, check_X_y, safe_mask,
                      deprecated)
@@ -33,7 +33,7 @@ from ..exceptions import ConvergenceWarning
 # Randomized linear model: feature selection
 
 def _resample_model(estimator_func, X, y, scaling=.5, n_resampling=200,
-                    n_jobs=1, verbose=False, pre_dispatch='3*n_jobs',
+                    n_jobs=None, verbose=False, pre_dispatch='3*n_jobs',
                     random_state=None, sample_fraction=.75, **params):
     random_state = check_random_state(random_state)
     # We are generating 1 - weights, and not weights
@@ -109,7 +109,7 @@ class BaseRandomizedLinearModel(six.with_metaclass(ABCMeta, BaseEstimator,
             memory = Memory(cachedir=memory, verbose=0)
         elif not isinstance(memory, Memory):
             raise ValueError("'memory' should either be a string or"
-                             " a sklearn.externals.joblib.Memory"
+                             " a sklearn.utils.Memory"
                              " instance, got 'memory={!r}' instead.".format(
                                  type(memory)))
 
@@ -195,8 +195,6 @@ class RandomizedLasso(BaseRandomizedLinearModel):
     is known as stability selection. In short, features selected more
     often are considered good features.
 
-    Read more in the :ref:`User Guide <randomized_l1>`.
-
     Parameters
     ----------
     alpha : float, 'aic', or 'bic', optional
@@ -206,7 +204,7 @@ class RandomizedLasso(BaseRandomizedLinearModel):
 
     scaling : float, optional
         The s parameter used to randomly scale the penalty of different
-        features (See :ref:`User Guide <randomized_l1>` for details ).
+        features.
         Should be between 0 and 1.
 
     sample_fraction : float, optional
@@ -253,15 +251,17 @@ class RandomizedLasso(BaseRandomizedLinearModel):
         optimization-based algorithms, this parameter does not control
         the tolerance of the optimization.
 
-    n_jobs : integer, optional
-        Number of CPUs to use during the resampling. If '-1', use
-        all the CPUs
-
     random_state : int, RandomState instance or None, optional (default=None)
         If int, random_state is the seed used by the random number generator;
         If RandomState instance, random_state is the random number generator;
         If None, the random number generator is the RandomState instance used
         by `np.random`.
+
+    n_jobs : int or None, optional (default=None)
+        Number of CPUs to use during the resampling.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
 
     pre_dispatch : int, or string, optional
         Controls the number of jobs that get dispatched during parallel
@@ -280,7 +280,7 @@ class RandomizedLasso(BaseRandomizedLinearModel):
             - A string, giving an expression as a function of n_jobs,
               as in '2*n_jobs'
 
-    memory : Instance of sklearn.externals.joblib.Memory or string, optional \
+    memory : None, str or object with the joblib.Memory interface, optional \
             (default=None)
         Used for internal caching. By default, no caching is done.
         If a string is given, it is the path to the caching directory.
@@ -298,12 +298,7 @@ class RandomizedLasso(BaseRandomizedLinearModel):
     Examples
     --------
     >>> from sklearn.linear_model import RandomizedLasso
-    >>> randomized_lasso = RandomizedLasso()
-
-    Notes
-    -----
-    For an example, see :ref:`examples/linear_model/plot_sparse_recovery.py
-    <sphx_glr_auto_examples_linear_model_plot_sparse_recovery.py>`.
+    >>> randomized_lasso = RandomizedLasso() # doctest: +SKIP
 
     References
     ----------
@@ -323,7 +318,7 @@ class RandomizedLasso(BaseRandomizedLinearModel):
                  normalize=True, precompute='auto',
                  max_iter=500,
                  eps=np.finfo(np.float).eps, random_state=None,
-                 n_jobs=1, pre_dispatch='3*n_jobs',
+                 n_jobs=None, pre_dispatch='3*n_jobs',
                  memory=None):
         self.alpha = alpha
         self.scaling = scaling
@@ -387,7 +382,8 @@ def _randomized_logistic(X, y, weights, mask, C=1., verbose=False,
     for this_C, this_scores in zip(C, scores.T):
         # XXX : would be great to do it with a warm_start ...
         clf = LogisticRegression(C=this_C, tol=tol, penalty='l1', dual=False,
-                                 fit_intercept=fit_intercept)
+                                 fit_intercept=fit_intercept,
+                                 solver='liblinear', multi_class='ovr')
         clf.fit(X, y)
         this_scores[:] = np.any(
             np.abs(clf.coef_) > 10 * np.finfo(np.float).eps, axis=0)
@@ -407,8 +403,6 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
     randomizations. This is known as stability selection. In short,
     features selected more often are considered good features.
 
-    Read more in the :ref:`User Guide <randomized_l1>`.
-
     Parameters
     ----------
     C : float or array-like of shape [n_reg_parameter], optional, default=1
@@ -420,7 +414,7 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
 
     scaling : float, optional, default=0.5
         The s parameter used to randomly scale the penalty of different
-        features (See :ref:`User Guide <randomized_l1>` for details ).
+        features.
         Should be between 0 and 1.
 
     sample_fraction : float, optional, default=0.75
@@ -432,6 +426,9 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
 
     selection_threshold : float, optional, default=0.25
         The score above which features should be selected.
+
+    tol : float, optional, default=1e-3
+         tolerance for stopping criteria of LogisticRegression
 
     fit_intercept : boolean, optional, default=True
         whether to calculate the intercept for this model. If set
@@ -451,18 +448,17 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
         `preprocessing.StandardScaler` before calling `fit` on an estimator
         with `normalize=False`.
 
-    tol : float, optional, default=1e-3
-         tolerance for stopping criteria of LogisticRegression
-
-    n_jobs : integer, optional
-        Number of CPUs to use during the resampling. If '-1', use
-        all the CPUs
-
     random_state : int, RandomState instance or None, optional (default=None)
         If int, random_state is the seed used by the random number generator;
         If RandomState instance, random_state is the random number generator;
         If None, the random number generator is the RandomState instance used
         by `np.random`.
+
+    n_jobs : int or None, optional (default=None)
+        Number of CPUs to use during the resampling.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
 
     pre_dispatch : int, or string, optional
         Controls the number of jobs that get dispatched during parallel
@@ -481,7 +477,7 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
             - A string, giving an expression as a function of n_jobs,
               as in '2*n_jobs'
 
-    memory : Instance of sklearn.externals.joblib.Memory or string, optional \
+    memory : None, str or object with the joblib.Memory interface, optional \
             (default=None)
         Used for internal caching. By default, no caching is done.
         If a string is given, it is the path to the caching directory.
@@ -499,12 +495,7 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
     Examples
     --------
     >>> from sklearn.linear_model import RandomizedLogisticRegression
-    >>> randomized_logistic = RandomizedLogisticRegression()
-
-    Notes
-    -----
-    For an example, see :ref:`examples/linear_model/plot_sparse_recovery.py
-    <sphx_glr_auto_examples_linear_model_plot_sparse_recovery.py>`.
+    >>> randomized_logistic = RandomizedLogisticRegression() # doctest: +SKIP
 
     References
     ----------
@@ -524,7 +515,7 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
                  fit_intercept=True, verbose=False,
                  normalize=True,
                  random_state=None,
-                 n_jobs=1, pre_dispatch='3*n_jobs',
+                 n_jobs=None, pre_dispatch='3*n_jobs',
                  memory=None):
         self.C = C
         self.scaling = scaling
@@ -586,11 +577,9 @@ def _lasso_stability_path(X, y, mask, weights, eps):
 def lasso_stability_path(X, y, scaling=0.5, random_state=None,
                          n_resampling=200, n_grid=100,
                          sample_fraction=0.75,
-                         eps=4 * np.finfo(np.float).eps, n_jobs=1,
+                         eps=4 * np.finfo(np.float).eps, n_jobs=None,
                          verbose=False):
     """Stability path based on randomized Lasso estimates
-
-    Read more in the :ref:`User Guide <randomized_l1>`.
 
     Parameters
     ----------
@@ -624,9 +613,11 @@ def lasso_stability_path(X, y, scaling=0.5, random_state=None,
     eps : float, optional
         Smallest value of alpha / alpha_max considered
 
-    n_jobs : integer, optional
-        Number of CPUs to use during the resampling. If '-1', use
-        all the CPUs
+    n_jobs : int or None, optional (default=None)
+        Number of CPUs to use during the resampling.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
 
     verbose : boolean or integer, optional
         Sets the verbosity amount
@@ -638,11 +629,6 @@ def lasso_stability_path(X, y, scaling=0.5, random_state=None,
 
     scores_path : array, shape = [n_features, n_grid]
         The scores for each feature along the path.
-
-    Notes
-    -----
-    For an example, see :ref:`examples/linear_model/plot_sparse_recovery.py
-    <sphx_glr_auto_examples_linear_model_plot_sparse_recovery.py>`.
     """
     X, y = check_X_y(X, y, accept_sparse=['csr', 'csc', 'coo'])
     rng = check_random_state(random_state)

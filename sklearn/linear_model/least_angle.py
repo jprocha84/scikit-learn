@@ -23,7 +23,7 @@ from ..base import RegressorMixin
 from ..utils import arrayfuncs, as_float_array, check_X_y, deprecated
 from ..model_selection import check_cv
 from ..exceptions import ConvergenceWarning
-from ..externals.joblib import Parallel, delayed
+from ..utils import Parallel, delayed
 from ..externals.six.moves import xrange
 from ..externals.six import string_types
 
@@ -54,23 +54,18 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
     y : array, shape: (n_samples)
         Input targets.
 
-    positive : boolean (default=False)
-        Restrict coefficients to be >= 0.
-        When using this option together with method 'lasso' the model
-        coefficients will not converge to the ordinary-least-squares solution
-        for small values of alpha (neither will they when using method 'lar'
-        ..). Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
-        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
-        algorithm are typically in congruence with the solution of the
-        coordinate descent lasso_path function.
-
-    max_iter : integer, optional (default=500)
-        Maximum number of iterations to perform, set to infinity for no limit.
+    Xy : array-like, shape (n_samples,) or (n_samples, n_targets), \
+            optional
+        Xy = np.dot(X.T, y) that can be precomputed. It is useful
+        only when the Gram matrix is precomputed.
 
     Gram : None, 'auto', array, shape: (n_features, n_features), optional
         Precomputed Gram matrix (X' * X), if ``'auto'``, the Gram
         matrix is precomputed from the given X, if there are more samples
         than features.
+
+    max_iter : integer, optional (default=500)
+        Maximum number of iterations to perform, set to infinity for no limit.
 
     alpha_min : float, optional (default=0)
         Minimum correlation along the path. It corresponds to the
@@ -80,13 +75,13 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
         Specifies the returned model. Select ``'lar'`` for Least Angle
         Regression, ``'lasso'`` for the Lasso.
 
+    copy_X : bool, optional (default=True)
+        If ``False``, ``X`` is overwritten.
+
     eps : float, optional (default=``np.finfo(np.float).eps``)
         The machine-precision regularization in the computation of the
         Cholesky diagonal factors. Increase this for very ill-conditioned
         systems.
-
-    copy_X : bool, optional (default=True)
-        If ``False``, ``X`` is overwritten.
 
     copy_Gram : bool, optional (default=True)
         If ``False``, ``Gram`` is overwritten.
@@ -100,6 +95,15 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
 
     return_n_iter : bool, optional (default=False)
         Whether to return the number of iterations.
+
+    positive : boolean (default=False)
+        Restrict coefficients to be >= 0.
+        This option is only allowed with method 'lasso'. Note that the model
+        coefficients will not converge to the ordinary-least-squares solution
+        for small values of alpha. Only coefficients up to the smallest alpha
+        value (``alphas_[alphas_ > 0.].min()`` when fit_path=True) reached by
+        the stepwise Lars-Lasso algorithm are typically in congruence with the
+        solution of the coordinate descent lasso_path function.
 
     Returns
     --------
@@ -131,7 +135,7 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
     References
     ----------
     .. [1] "Least Angle Regression", Effron et al.
-           http://statweb.stanford.edu/~tibs/ftp/lars.pdf
+           https://statweb.stanford.edu/~tibs/ftp/lars.pdf
 
     .. [2] `Wikipedia entry on the Least-angle regression
            <https://en.wikipedia.org/wiki/Least-angle_regression>`_
@@ -140,6 +144,11 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
            <https://en.wikipedia.org/wiki/Lasso_(statistics)>`_
 
     """
+    if method == 'lar' and positive:
+        warnings.warn('positive option is broken for Least'
+                      ' Angle Regression (LAR). Use method="lasso".'
+                      ' This option will be removed in version 0.22.',
+                      DeprecationWarning)
 
     n_features = X.shape[1]
     n_samples = y.size
@@ -160,13 +169,7 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
 
     # will hold the cholesky factorization. Only lower part is
     # referenced.
-    # We are initializing this to "zeros" and not empty, because
-    # it is passed to scipy linalg functions and thus if it has NaNs,
-    # even if they are in the upper part that it not used, we
-    # get errors raised.
-    # Once we support only scipy > 0.12 we can use check_finite=False and
-    # go back to "empty"
-    L = np.zeros((max_features, max_features), dtype=X.dtype)
+    L = np.empty((max_features, max_features), dtype=X.dtype)
     swap, nrm2 = linalg.get_blas_funcs(('swap', 'nrm2'), (X,))
     solve_cholesky, = get_lapack_funcs(('potrs',), (X,))
 
@@ -409,8 +412,6 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
                 alphas[-add_features:] = 0
             coef = coefs[n_iter]
             prev_coef = coefs[n_iter - 1]
-            alpha = alphas[n_iter, np.newaxis]
-            prev_alpha = alphas[n_iter - 1, np.newaxis]
         else:
             # mimic the effect of incrementing n_iter on the array references
             prev_coef = coef
@@ -498,17 +499,10 @@ class Lars(LinearModel, RegressorMixin):
 
     Parameters
     ----------
-    n_nonzero_coefs : int, optional
-        Target number of non-zero coefficients. Use ``np.inf`` for no limit.
-
     fit_intercept : boolean
         Whether to calculate the intercept for this model. If set
         to false, no intercept will be used in calculations
         (e.g. data is expected to be already centered).
-
-    positive : boolean (default=False)
-        Restrict coefficients to be >= 0. Be aware that you might want to
-        remove fit_intercept which is set True by default.
 
     verbose : boolean or integer, optional
         Sets the verbosity amount
@@ -526,8 +520,8 @@ class Lars(LinearModel, RegressorMixin):
         calculations. If set to ``'auto'`` let us decide. The Gram
         matrix can also be passed as argument.
 
-    copy_X : boolean, optional, default True
-        If ``True``, X will be copied; else, it may be overwritten.
+    n_nonzero_coefs : int, optional
+        Target number of non-zero coefficients. Use ``np.inf`` for no limit.
 
     eps : float, optional
         The machine-precision regularization in the computation of the
@@ -536,11 +530,22 @@ class Lars(LinearModel, RegressorMixin):
         optimization-based algorithms, this parameter does not control
         the tolerance of the optimization.
 
+    copy_X : boolean, optional, default True
+        If ``True``, X will be copied; else, it may be overwritten.
+
     fit_path : boolean
         If True the full path is stored in the ``coef_path_`` attribute.
         If you compute the solution for a large problem or many targets,
         setting ``fit_path`` to ``False`` will lead to a speedup, especially
         with a small alpha.
+
+    positive : boolean (default=False)
+        Restrict coefficients to be >= 0. Be aware that you might want to
+        remove fit_intercept which is set True by default.
+
+        .. deprecated:: 0.20
+
+            The option is broken and deprecated. It will be removed in v0.22.
 
     Attributes
     ----------
@@ -601,7 +606,8 @@ class Lars(LinearModel, RegressorMixin):
         self.copy_X = copy_X
         self.fit_path = fit_path
 
-    def _get_gram(self, precompute, X, y):
+    @staticmethod
+    def _get_gram(precompute, X, y):
         if (not hasattr(precompute, '__array__')) and (
                 (precompute is True) or
                 (precompute == 'auto' and X.shape[0] > X.shape[1]) or
@@ -614,10 +620,8 @@ class Lars(LinearModel, RegressorMixin):
         """Auxiliary method to fit the model using X, y as training data"""
         n_features = X.shape[1]
 
-        X, y, X_offset, y_offset, X_scale = self._preprocess_data(X, y,
-                                                        self.fit_intercept,
-                                                        self.normalize,
-                                                        self.copy_X)
+        X, y, X_offset, y_offset, X_scale = self._preprocess_data(
+            X, y, self.fit_intercept, self.normalize, self.copy_X)
 
         if y.ndim == 1:
             y = y[:, np.newaxis]
@@ -731,16 +735,6 @@ class LassoLars(Lars):
         to false, no intercept will be used in calculations
         (e.g. data is expected to be already centered).
 
-    positive : boolean (default=False)
-        Restrict coefficients to be >= 0. Be aware that you might want to
-        remove fit_intercept which is set True by default.
-        Under the positive restriction the model coefficients will not converge
-        to the ordinary-least-squares solution for small values of alpha.
-        Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
-        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
-        algorithm are typically in congruence with the solution of the
-        coordinate descent Lasso estimator.
-
     verbose : boolean or integer, optional
         Sets the verbosity amount
 
@@ -751,9 +745,6 @@ class LassoLars(Lars):
         If you wish to standardize, please use
         :class:`sklearn.preprocessing.StandardScaler` before calling ``fit``
         on an estimator with ``normalize=False``.
-
-    copy_X : boolean, optional, default True
-        If True, X will be copied; else, it may be overwritten.
 
     precompute : True | False | 'auto' | array-like
         Whether to use a precomputed Gram matrix to speed up
@@ -770,11 +761,24 @@ class LassoLars(Lars):
         optimization-based algorithms, this parameter does not control
         the tolerance of the optimization.
 
+    copy_X : boolean, optional, default True
+        If True, X will be copied; else, it may be overwritten.
+
     fit_path : boolean
         If ``True`` the full path is stored in the ``coef_path_`` attribute.
         If you compute the solution for a large problem or many targets,
         setting ``fit_path`` to ``False`` will lead to a speedup, especially
         with a small alpha.
+
+    positive : boolean (default=False)
+        Restrict coefficients to be >= 0. Be aware that you might want to
+        remove fit_intercept which is set True by default.
+        Under the positive restriction the model coefficients will not converge
+        to the ordinary-least-squares solution for small values of alpha.
+        Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
+        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
+        algorithm are typically in congruence with the solution of the
+        coordinate descent Lasso estimator.
 
     Attributes
     ----------
@@ -821,6 +825,7 @@ class LassoLars(Lars):
     Lasso
     LassoCV
     LassoLarsCV
+    LassoLarsIC
     sklearn.decomposition.sparse_encode
 
     """
@@ -965,7 +970,9 @@ def _lars_path_residues(X_train, y_train, X_test, y_test, Gram=None,
 
 
 class LarsCV(Lars):
-    """Cross-validated Least Angle Regression model
+    """Cross-validated Least Angle Regression model.
+
+    See glossary entry for :term:`cross-validation estimator`.
 
     Read more in the :ref:`User Guide <least_angle_regression>`.
 
@@ -976,12 +983,11 @@ class LarsCV(Lars):
         to false, no intercept will be used in calculations
         (e.g. data is expected to be already centered).
 
-    positive : boolean (default=False)
-        Restrict coefficients to be >= 0. Be aware that you might want to
-        remove fit_intercept which is set True by default.
-
     verbose : boolean or integer, optional
         Sets the verbosity amount
+
+    max_iter : integer, optional
+        Maximum number of iterations to perform.
 
     normalize : boolean, optional, default True
         This parameter is ignored when ``fit_intercept`` is set to False.
@@ -991,16 +997,10 @@ class LarsCV(Lars):
         :class:`sklearn.preprocessing.StandardScaler` before calling ``fit``
         on an estimator with ``normalize=False``.
 
-    copy_X : boolean, optional, default True
-        If ``True``, X will be copied; else, it may be overwritten.
-
-    precompute : True | False | 'auto'
+    precompute : True | False | 'auto' | array-like
         Whether to use a precomputed Gram matrix to speed up
         calculations. If set to ``'auto'`` let us decide. The Gram matrix
         cannot be passed as argument since we will use only subsets of X.
-
-    max_iter : integer, optional
-        Maximum number of iterations to perform.
 
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
@@ -1016,19 +1016,34 @@ class LarsCV(Lars):
         Refer :ref:`User Guide <cross_validation>` for the various
         cross-validation strategies that can be used here.
 
+        .. versionchanged:: 0.20
+            ``cv`` default value if None will change from 3-fold to 5-fold
+            in v0.22.
+
     max_n_alphas : integer, optional
         The maximum number of points on the path used to compute the
         residuals in the cross-validation
 
-    n_jobs : integer, optional
-        Number of CPUs to use during the cross validation. If ``-1``, use
-        all the CPUs
+    n_jobs : int or None, optional (default=None)
+        Number of CPUs to use during the cross validation.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
 
     eps : float, optional
         The machine-precision regularization in the computation of the
         Cholesky diagonal factors. Increase this for very ill-conditioned
         systems.
 
+    copy_X : boolean, optional, default True
+        If ``True``, X will be copied; else, it may be overwritten.
+
+    positive : boolean (default=False)
+        Restrict coefficients to be >= 0. Be aware that you might want to
+        remove fit_intercept which is set True by default.
+
+        .. deprecated:: 0.20
+            The option is broken and deprecated. It will be removed in v0.22.
 
     Attributes
     ----------
@@ -1057,6 +1072,19 @@ class LarsCV(Lars):
     n_iter_ : array-like or int
         the number of iterations run by Lars with the optimal alpha.
 
+    Examples
+    --------
+    >>> from sklearn.linear_model import LarsCV
+    >>> from sklearn.datasets import make_regression
+    >>> X, y = make_regression(n_samples=200, noise=4.0, random_state=0)
+    >>> reg = LarsCV(cv=5).fit(X, y)
+    >>> reg.score(X, y) # doctest: +ELLIPSIS
+    0.9996...
+    >>> reg.alpha_
+    0.0254...
+    >>> reg.predict(X[:1,])
+    array([154.0842...])
+
     See also
     --------
     lars_path, LassoLars, LassoLarsCV
@@ -1065,8 +1093,8 @@ class LarsCV(Lars):
     method = 'lar'
 
     def __init__(self, fit_intercept=True, verbose=False, max_iter=500,
-                 normalize=True, precompute='auto', cv=None,
-                 max_n_alphas=1000, n_jobs=1, eps=np.finfo(np.float).eps,
+                 normalize=True, precompute='auto', cv='warn',
+                 max_n_alphas=1000, n_jobs=None, eps=np.finfo(np.float).eps,
                  copy_X=True, positive=False):
         self.max_iter = max_iter
         self.cv = cv
@@ -1166,15 +1194,11 @@ class LarsCV(Lars):
         # impedance matching for the above Lars.fit (should not be documented)
         return self.alpha_
 
-    @property
-    @deprecated("Attribute ``cv_mse_path_`` is deprecated in 0.18 and "
-                "will be removed in 0.20. Use ``mse_path_`` instead")
-    def cv_mse_path_(self):
-        return self.mse_path_
-
 
 class LassoLarsCV(LarsCV):
-    """Cross-validated Lasso, using the LARS algorithm
+    """Cross-validated Lasso, using the LARS algorithm.
+
+    See glossary entry for :term:`cross-validation estimator`.
 
     The optimization objective for Lasso is::
 
@@ -1189,20 +1213,11 @@ class LassoLarsCV(LarsCV):
         to false, no intercept will be used in calculations
         (e.g. data is expected to be already centered).
 
-    positive : boolean (default=False)
-        Restrict coefficients to be >= 0. Be aware that you might want to
-        remove fit_intercept which is set True by default.
-        Under the positive restriction the model coefficients do not converge
-        to the ordinary-least-squares solution for small values of alpha.
-        Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
-        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
-        algorithm are typically in congruence with the solution of the
-        coordinate descent Lasso estimator.
-        As a consequence using LassoLarsCV only makes sense for problems where
-        a sparse solution is expected and/or reached.
-
     verbose : boolean or integer, optional
         Sets the verbosity amount
+
+    max_iter : integer, optional
+        Maximum number of iterations to perform.
 
     normalize : boolean, optional, default True
         This parameter is ignored when ``fit_intercept`` is set to False.
@@ -1216,9 +1231,6 @@ class LassoLarsCV(LarsCV):
         Whether to use a precomputed Gram matrix to speed up
         calculations. If set to ``'auto'`` let us decide. The Gram matrix
         cannot be passed as argument since we will use only subsets of X.
-
-    max_iter : integer, optional
-        Maximum number of iterations to perform.
 
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
@@ -1234,13 +1246,19 @@ class LassoLarsCV(LarsCV):
         Refer :ref:`User Guide <cross_validation>` for the various
         cross-validation strategies that can be used here.
 
+        .. versionchanged:: 0.20
+            ``cv`` default value if None will change from 3-fold to 5-fold
+            in v0.22.
+
     max_n_alphas : integer, optional
         The maximum number of points on the path used to compute the
         residuals in the cross-validation
 
-    n_jobs : integer, optional
-        Number of CPUs to use during the cross validation. If ``-1``, use
-        all the CPUs
+    n_jobs : int or None, optional (default=None)
+        Number of CPUs to use during the cross validation.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
 
     eps : float, optional
         The machine-precision regularization in the computation of the
@@ -1249,6 +1267,18 @@ class LassoLarsCV(LarsCV):
 
     copy_X : boolean, optional, default True
         If True, X will be copied; else, it may be overwritten.
+
+    positive : boolean (default=False)
+        Restrict coefficients to be >= 0. Be aware that you might want to
+        remove fit_intercept which is set True by default.
+        Under the positive restriction the model coefficients do not converge
+        to the ordinary-least-squares solution for small values of alpha.
+        Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
+        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
+        algorithm are typically in congruence with the solution of the
+        coordinate descent Lasso estimator.
+        As a consequence using LassoLarsCV only makes sense for problems where
+        a sparse solution is expected and/or reached.
 
     Attributes
     ----------
@@ -1277,6 +1307,19 @@ class LassoLarsCV(LarsCV):
     n_iter_ : array-like or int
         the number of iterations run by Lars with the optimal alpha.
 
+    Examples
+    --------
+    >>> from sklearn.linear_model import LassoLarsCV
+    >>> from sklearn.datasets import make_regression
+    >>> X, y = make_regression(noise=4.0, random_state=0)
+    >>> reg = LassoLarsCV(cv=5).fit(X, y)
+    >>> reg.score(X, y) # doctest: +ELLIPSIS
+    0.9992...
+    >>> reg.alpha_
+    0.0484...
+    >>> reg.predict(X[:1,])
+    array([-77.8723...])
+
     Notes
     -----
 
@@ -1297,8 +1340,8 @@ class LassoLarsCV(LarsCV):
     method = 'lasso'
 
     def __init__(self, fit_intercept=True, verbose=False, max_iter=500,
-                 normalize=True, precompute='auto', cv=None,
-                 max_n_alphas=1000, n_jobs=1, eps=np.finfo(np.float).eps,
+                 normalize=True, precompute='auto', cv='warn',
+                 max_n_alphas=1000, n_jobs=None, eps=np.finfo(np.float).eps,
                  copy_X=True, positive=False):
         self.fit_intercept = fit_intercept
         self.verbose = verbose
@@ -1340,18 +1383,6 @@ class LassoLarsIC(LassoLars):
         to false, no intercept will be used in calculations
         (e.g. data is expected to be already centered).
 
-    positive : boolean (default=False)
-        Restrict coefficients to be >= 0. Be aware that you might want to
-        remove fit_intercept which is set True by default.
-        Under the positive restriction the model coefficients do not converge
-        to the ordinary-least-squares solution for small values of alpha.
-        Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
-        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
-        algorithm are typically in congruence with the solution of the
-        coordinate descent Lasso estimator.
-        As a consequence using LassoLarsIC only makes sense for problems where
-        a sparse solution is expected and/or reached.
-
     verbose : boolean or integer, optional
         Sets the verbosity amount
 
@@ -1362,9 +1393,6 @@ class LassoLarsIC(LassoLars):
         If you wish to standardize, please use
         :class:`sklearn.preprocessing.StandardScaler` before calling ``fit``
         on an estimator with ``normalize=False``.
-
-    copy_X : boolean, optional, default True
-        If True, X will be copied; else, it may be overwritten.
 
     precompute : True | False | 'auto' | array-like
         Whether to use a precomputed Gram matrix to speed up
@@ -1381,6 +1409,21 @@ class LassoLarsIC(LassoLars):
         systems. Unlike the ``tol`` parameter in some iterative
         optimization-based algorithms, this parameter does not control
         the tolerance of the optimization.
+
+    copy_X : boolean, optional, default True
+        If True, X will be copied; else, it may be overwritten.
+
+    positive : boolean (default=False)
+        Restrict coefficients to be >= 0. Be aware that you might want to
+        remove fit_intercept which is set True by default.
+        Under the positive restriction the model coefficients do not converge
+        to the ordinary-least-squares solution for small values of alpha.
+        Only coefficients up to the smallest alpha value (``alphas_[alphas_ >
+        0.].min()`` when fit_path=True) reached by the stepwise Lars-Lasso
+        algorithm are typically in congruence with the solution of the
+        coordinate descent Lasso estimator.
+        As a consequence using LassoLarsIC only makes sense for problems where
+        a sparse solution is expected and/or reached.
 
 
     Attributes
